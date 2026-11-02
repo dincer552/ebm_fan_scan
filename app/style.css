@@ -128,6 +128,16 @@ h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
   font-size: 11.5px;
 }
 
+.lastCheck {
+  flex: 0 0 auto;
+  color: #5f7396;
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .lastCheck { display: none; }
+}
+
 .updateBtn { flex: 0 0 auto; }
 
 .updateStrip.busy .updateDot { background: var(--amber); animation: pulse 1.2s ease-in-out infinite; }

@@ -322,6 +322,10 @@ async function checkUpdate(manual) {
     if (manual) log('err', 'Güncelleme kontrolü: ' + (err.message || err));
   } finally {
     UPDATER.checking = false;
+    const stamp = $('lastCheck');
+    if (stamp) {
+      stamp.textContent = 'Son kontrol ' + new Date().toLocaleTimeString('tr-TR', { hour12: false });
+    }
   }
 }
 
