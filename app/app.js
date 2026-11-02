@@ -1138,9 +1138,19 @@ async function writeHoldingMultiple(id, addr, values, timeout) {
 }
 
 async function writeHoldingEither(primaryId, fallbackId, addr, value, timeout) {
-  const first = await writeHolding(primaryId, addr, value, timeout);
-  if (first.ok || primaryId === fallbackId) return first;
-  return writeHolding(fallbackId, addr, value, timeout);
+  const ids = primaryId === fallbackId ? [primaryId] : [primaryId, fallbackId];
+  let last = { ok: false, error: 'Yanıt yok' };
+
+  for (const id of ids) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const res = await writeHolding(id, addr, value, timeout);
+      if (res.ok) return res;
+      last = res;
+      if (res.error !== 'Yanıt yok') return res;
+      if (attempt < 3) await delay(250);
+    }
+  }
+  return last;
 }
 
 async function authorizeFan(id, timeout) {
@@ -1235,7 +1245,7 @@ async function saveAddress() {
     'Kayıttan sonra bağlantı yeni ayarlarla yeniden açılacak. Devam edilsin mi?';
   if (!confirm(message)) return;
 
-  const timeout = Math.max(500, parseInt($('timeout').value, 10) || 150);
+  const timeout = Math.max(1000, parseInt($('timeout').value, 10) || 150);
   let failure = null;
   let resetAttempted = false;
   let addressWritten = false;
@@ -1247,15 +1257,20 @@ async function saveAddress() {
     const pwRes = await writeHoldingMultiple(oldId, ADDR.password, FAN_PASSWORD, timeout);
     if (!pwRes.ok) throw new Error('Şifre yazılamadı: ' + pwRes.error);
 
-    const addrRes = await writeHolding(oldId, ADDR.fanAddress, newId, timeout);
+    const addrRes = await writeHoldingEither(oldId, newId, ADDR.fanAddress, newId, timeout);
     if (!addrRes.ok) throw new Error('Adres yazılamadı: ' + addrRes.error);
     addressWritten = true;
+
+    // The fan can be busy for a moment after storing the address.
+    await delay(600);
 
     const baudRes = await writeHoldingEither(oldId, newId, ADDR.transmissionSpeed, BAUD_CODES[baud], timeout);
     if (!baudRes.ok) throw new Error('Baud hızı yazılamadı: ' + baudRes.error);
 
     const parityRes = await writeHoldingEither(oldId, newId, ADDR.parityConfig, protoCode, timeout);
     if (!parityRes.ok) throw new Error('Protokol yazılamadı: ' + parityRes.error);
+
+    await delay(300);
 
     resetAttempted = true;
     const resetRes = await writeHoldingEither(oldId, newId, ADDR.reset, 2, timeout);
