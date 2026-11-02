@@ -324,7 +324,7 @@ async function checkUpdate(manual) {
     UPDATER.checking = false;
     const stamp = $('lastCheck');
     if (stamp) {
-      stamp.textContent = 'Son kontrol ' + new Date().toLocaleTimeString('tr-TR', { hour12: false });
+      stamp.textContent = 'Son kontrol: ' + new Date().toLocaleTimeString('tr-TR', { hour12: false });
     }
   }
 }
