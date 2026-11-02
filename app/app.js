@@ -20,6 +20,7 @@ const S = {
   fanPolling: false,
   fanBusy: false,
   addrBusy: false,
+  factoryBusy: false,
 };
 
 const REG_BASE = 0xD000;
@@ -39,6 +40,10 @@ const ADDR = {
   parityConfig: 0xD14A,
   reset: 0xD000,
   password: 0xD002,
+  factorySetting: 0xD005,
+  factoryAddress: 0xD280,
+  factoryBaud: 0xD2C9,
+  factoryParity: 0xD2CA,
 };
 
 const FAN_PASSWORD = [25968, 19744, 17731];
@@ -119,6 +124,7 @@ function bindEvents() {
   $('btnFanRefresh').addEventListener('click', () => refreshFanStatus(true));
   $('btnAddrSave').addEventListener('click', saveAddress);
   $('btnAddrDefaults').addEventListener('click', fillAddressDefaults);
+  $('btnFactoryReset').addEventListener('click', factoryReset);
   $('btnClearLog').addEventListener('click', () => { $('log').textContent = ''; });
   $('btnCopyLog').addEventListener('click', async () => {
     try {
@@ -213,14 +219,17 @@ function updateControls() {
   $('btnReadReg').disabled = !connected || scanning || !S.selected;
   $('btnWriteReg').disabled = !connected || scanning || !S.selected;
 
-  const fanReady = connected && !scanning && !!S.selected && !S.fanBusy && !S.addrBusy;
+  const fanReady = connected && !scanning && !!S.selected && !S.fanBusy && !S.addrBusy && !S.factoryBusy;
   $('btnFanStart').disabled = !fanReady;
   $('btnFanStop').disabled = !fanReady;
   $('btnFanRefresh').disabled = !fanReady;
 
-  const addrReady = connected && !scanning && !!S.selected && !S.fanBusy && !S.addrBusy;
+  const addrReady = connected && !scanning && !!S.selected && !S.fanBusy && !S.addrBusy && !S.factoryBusy;
   $('btnAddrSave').disabled = !addrReady;
   $('btnAddrDefaults').disabled = !addrReady;
+
+  const factoryReady = connected && !scanning && !!S.selected && !S.fanBusy && !S.addrBusy && !S.factoryBusy;
+  $('btnFactoryReset').disabled = !factoryReady;
 
   if (scanning) setBadge('busy');
   else if (connected) setBadge('on');
@@ -822,6 +831,7 @@ function selectDevice(dev) {
   $('detailPill').textContent = `Adres ${dev.id} · FC${dev.func}`;
   updateControls();
   resetFanPanel();
+  resetFactoryHint();
   fillAddressDefaults();
   (async () => {
     try {
@@ -851,6 +861,7 @@ function clearDetail() {
   $('detailRegs').textContent = '';
   $('rwResult').textContent = '';
   resetFanPanel();
+  resetFactoryHint();
   updateControls();
 }
 
@@ -962,8 +973,12 @@ function resetFanPanel() {
     'Hedef hızı girin ve ÇALIŞTIR\'a basın. DURDUR, D001 setpoint\'ini 0 yapar.';
 }
 
+function resetFactoryHint() {
+  $('factoryHint').textContent = 'Fabrika adresi ve arayüz ayarları cihazdan okunur.';
+}
+
 async function refreshFanStatus(verbose = false) {
-  if (!S.port || !S.selected || S.scanning || S.closing || S.fanBusy) return;
+  if (!S.port || !S.selected || S.scanning || S.closing || S.fanBusy || S.factoryBusy) return;
   const id = S.selected.id;
   const timeout = Math.max(300, parseInt($('timeout').value, 10) || 150);
 
@@ -1033,7 +1048,7 @@ function stopFanPoll() {
 }
 
 async function startFan() {
-  if (!S.port || !S.selected || S.scanning || S.fanBusy) return;
+  if (!S.port || !S.selected || S.scanning || S.fanBusy || S.addrBusy || S.factoryBusy) return;
   const id = S.selected.id;
   const rpm = Math.round(parseFloat($('fanRpm').value));
 
@@ -1081,7 +1096,7 @@ async function startFan() {
 }
 
 async function stopFan() {
-  if (!S.port || !S.selected || S.scanning || S.fanBusy) return;
+  if (!S.port || !S.selected || S.scanning || S.fanBusy || S.addrBusy || S.factoryBusy) return;
   const id = S.selected.id;
   const timeout = Math.max(300, parseInt($('timeout').value, 10) || 150);
 
@@ -1169,7 +1184,7 @@ async function authorizeSelected() {
   const timeout = Math.max(1200, parseInt($('timeout').value, 10) || 150);
   await acquireBus();
   try {
-    if (S.selected && S.selected.id === id && !S.addrBusy && !S.fanBusy) {
+    if (S.selected && S.selected.id === id && !S.addrBusy && !S.fanBusy && !S.factoryBusy) {
       await authorizeFan(id, timeout);
     }
   } finally {
@@ -1213,7 +1228,7 @@ async function verifyAddress(id, timeout) {
 }
 
 async function saveAddress() {
-  if (!S.port || !S.selected || S.scanning || S.fanBusy || S.addrBusy) return;
+  if (!S.port || !S.selected || S.scanning || S.fanBusy || S.addrBusy || S.factoryBusy) return;
 
   const oldId = S.selected.id;
   const newId = parseInt($('addrNew').value, 10);
@@ -1351,6 +1366,121 @@ async function saveAddress() {
   }
 }
 
+/* ---------------- factory reset ---------------- */
+
+async function factoryReset() {
+  if (!S.port || !S.selected || S.scanning || S.fanBusy || S.addrBusy || S.factoryBusy) return;
+
+  const currentId = S.selected.id;
+  const confirmed = confirm(
+    `ID ${currentId} fanı fabrika ayarlarına sıfırlanacak.\n\n` +
+    'D100–D17F kontrol parametreleri fabrika değerlerine dönecek; ' +
+    'adres ve baud değişebilir. Devam edilsin mi?'
+  );
+  if (!confirmed) return;
+
+  const timeout = Math.max(1200, parseInt($('timeout').value, 10) || 150);
+  const baudByCode = Object.fromEntries(
+    Object.entries(BAUD_CODES).map(([baudValue, code]) => [code, Number(baudValue)])
+  );
+
+  let factoryId = 1;
+  let factoryBaud = 19200;
+  let factoryProtoCode = 0;
+  let activeId = currentId;
+  let failure = null;
+
+  S.factoryBusy = true;
+  updateControls();
+  await acquireBus();
+  try {
+    const fId = await readSingle(currentId, 3, ADDR.factoryAddress, timeout);
+    if (fId !== null && fId >= 1 && fId <= 247) factoryId = fId;
+
+    const fBaud = await readSingle(currentId, 3, ADDR.factoryBaud, timeout);
+    if (fBaud !== null && baudByCode[fBaud]) factoryBaud = baudByCode[fBaud];
+
+    const fProto = await readSingle(currentId, 3, ADDR.factoryParity, timeout);
+    if (fProto !== null && PROTOCOLS[fProto]) factoryProtoCode = fProto;
+
+    const protoLabel = (PROTOCOLS[factoryProtoCode] || PROTOCOLS[0]).label;
+    $('factoryHint').textContent =
+      `Fabrika hedefi: ID ${factoryId} · ${factoryBaud} ${protoLabel}. Sıfırlanıyor…`;
+
+    const pw = await writeHoldingMultiple(currentId, ADDR.password, FAN_PASSWORD, timeout);
+    if (!pw.ok) throw new Error('Şifre yazılamadı: ' + pw.error);
+
+    const res = await writeHoldingEither(currentId, currentId, ADDR.factorySetting, 1, timeout);
+    if (!res.ok) throw new Error('D005 yazılamadı: ' + res.error);
+
+    let done = false;
+    for (let i = 0; i < 20; i++) {
+      await delay(500);
+      let value = await readSingle(currentId, 3, ADDR.factorySetting, timeout);
+      let id = currentId;
+      if (value === null) {
+        value = await readSingle(factoryId, 3, ADDR.factorySetting, timeout);
+        id = factoryId;
+      }
+      if (value === null) continue;
+
+      activeId = id;
+      if (value & 0x04) throw new Error('Fabrika kopyalama hatası (D005 Error biti).');
+      if ((value & 0x03) === 0) { done = true; break; }
+    }
+    if (!done) throw new Error('Fabrika kopyalama tamamlanmadı (D005 sıfırlanmadı).');
+
+    const apply = await writeHoldingEither(activeId, activeId, ADDR.reset, 2, timeout);
+    if (!apply.ok) {
+      log('err', 'Transfer parameter yanıtı alınamadı; yeni ayarlarla doğrulanacak: ' + apply.error);
+    }
+  } catch (err) {
+    failure = err.message || String(err);
+  } finally {
+    releaseBus();
+    S.factoryBusy = false;
+    updateControls();
+  }
+
+  if (failure) {
+    $('factoryHint').textContent = 'Fabrika sıfırlama başarısız: ' + failure;
+    log('err', 'Fabrika sıfırlama başarısız: ' + failure);
+    return;
+  }
+
+  const proto = PROTOCOLS[factoryProtoCode] || PROTOCOLS[0];
+  let verifiedId = null;
+
+  S.factoryBusy = true;
+  updateControls();
+  try {
+    await reopenPort(factoryBaud, proto.parity, proto.stopBits);
+    await delay(1500);
+    if (await verifyAddress(factoryId, timeout) !== null) verifiedId = factoryId;
+    else if (await verifyAddress(currentId, timeout) !== null) verifiedId = currentId;
+  } catch (err) {
+    log('err', 'Fabrika sıfırlama sonrası bağlantı: ' + (err.message || err));
+  } finally {
+    S.factoryBusy = false;
+    updateControls();
+  }
+
+  if (verifiedId !== null) {
+    S.selected.id = verifiedId;
+    renderDevices();
+    $('detailPill').textContent = `Adres ${verifiedId} · FC${S.selected.func}`;
+    $('factoryHint').textContent =
+      `Fabrika ayarları yüklendi · ID ${verifiedId} · ${factoryBaud} ${proto.label}. Fan durduruldu.`;
+    log('info', `Fabrika sıfırlama tamamlandı · ID ${verifiedId} · ${factoryBaud} ${proto.label}`);
+    await refreshFanStatus(true);
+  } else {
+    $('factoryHint').textContent =
+      'Fabrika ayarları yazıldı ancak bağlantı doğrulanamadı. Fanı kapatıp açın; 19200 8E1 ile tarayın.';
+    log('err', 'Fabrika sıfırlama sonrası bağlantı doğrulanamadı');
+    await disconnect();
+  }
+}
+
 /* ---------------- register tool ---------------- */
 
 function parseNumber(text) {
@@ -1392,7 +1522,7 @@ async function readRegisterTool() {
 }
 
 async function writeRegisterTool() {
-  if (!S.port || !S.selected || S.scanning) return;
+  if (!S.port || !S.selected || S.scanning || S.addrBusy || S.factoryBusy) return;
   const id = S.selected.id;
   const addr = parseNumber($('rwAddr').value);
   const value = parseNumber($('rwValue').value);
