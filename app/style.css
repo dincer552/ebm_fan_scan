@@ -387,14 +387,6 @@ button.warn {
 
 .addrPanel .grid { margin-bottom: 12px; }
 
-.pwGrid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-@media (max-width: 700px) {
-  .pwGrid { grid-template-columns: 1fr; }
-}
-
 .progress {
   height: 9px;
   border-radius: 999px;

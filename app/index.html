@@ -195,25 +195,13 @@
           </label>
         </div>
 
-        <div class="grid pwGrid">
-          <label>Şifre 1 · D002 (53250)
-            <input id="addrPw1" type="number" min="0" max="65535" value="25968">
-          </label>
-          <label>Şifre 2 · D003
-            <input id="addrPw2" type="number" min="0" max="65535" value="19744">
-          </label>
-          <label>Şifre 3 · D004
-            <input id="addrPw3" type="number" min="0" max="65535" value="17731">
-          </label>
-        </div>
-
         <div class="row">
           <button id="btnAddrSave" class="warn" disabled>ADRESLE ve KAYDET</button>
           <button id="btnAddrDefaults" class="ghost" disabled>Mevcut Ayarları Getir</button>
         </div>
 
         <p class="hint" id="addrHint">
-          Şifre D002–D004'e (53250–53252) 3 register olarak yazılır. Ardından D100 adres,
+          Şifre otomatik olarak D002–D004'e (53250–53252) yazılır. Ardından D100 adres,
           D149 baud ve D14A protokol yazılır; D000=2 ile uygulanır.
           Kayıttan sonra bağlantı yeni adres ve hızla yeniden açılır.
         </p>

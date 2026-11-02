@@ -41,6 +41,8 @@ const ADDR = {
   password: 0xD002,
 };
 
+const FAN_PASSWORD = [25968, 19744, 17731];
+
 const BAUD_CODES = {
   1200: 0,
   2400: 1,
@@ -821,7 +823,12 @@ function selectDevice(dev) {
   updateControls();
   resetFanPanel();
   fillAddressDefaults();
-  refreshFanStatus(false);
+  (async () => {
+    try {
+      await refreshFanStatus(false);
+    } catch { /* ignore */ }
+    if (S.selected === dev) authorizeSelected();
+  })();
 
   const wrap = $('detailRegs');
   wrap.textContent = '';
@@ -1136,6 +1143,30 @@ async function writeHoldingEither(primaryId, fallbackId, addr, value, timeout) {
   return writeHolding(fallbackId, addr, value, timeout);
 }
 
+async function authorizeFan(id, timeout) {
+  const res = await writeHoldingMultiple(id, ADDR.password, FAN_PASSWORD, timeout);
+  if (res.ok) {
+    log('info', `Şifre D002–D004'e yazıldı · ID ${id}`);
+  } else {
+    log('warn', `Şifre yazılamadı · ID ${id}: ${res.error}`);
+  }
+  return res.ok;
+}
+
+async function authorizeSelected() {
+  if (!S.port || !S.selected || S.scanning || S.closing) return;
+  const id = S.selected.id;
+  const timeout = Math.max(1200, parseInt($('timeout').value, 10) || 150);
+  await acquireBus();
+  try {
+    if (S.selected && S.selected.id === id && !S.addrBusy && !S.fanBusy) {
+      await authorizeFan(id, timeout);
+    }
+  } finally {
+    releaseBus();
+  }
+}
+
 async function reopenPort(baud, parity, stopBits) {
   S.closing = true;
   if (S.pending) S.pending.finish(null);
@@ -1179,7 +1210,6 @@ async function saveAddress() {
   const baud = parseInt($('addrBaud').value, 10);
   const protoCode = parseInt($('addrProto').value, 10);
   const proto = PROTOCOLS[protoCode];
-  const password = [1, 2, 3].map((i) => parseInt($('addrPw' + i).value, 10));
 
   if (!Number.isInteger(newId) || newId < 1 || newId > 247) {
     $('addrHint').textContent = 'Yeni adres 1–247 arasında olmalı.';
@@ -1191,10 +1221,6 @@ async function saveAddress() {
   }
   if (!proto) {
     $('addrHint').textContent = 'Geçerli bir protokol seçin.';
-    return;
-  }
-  if (password.some((v) => !Number.isInteger(v) || v < 0 || v > 65535)) {
-    $('addrHint').textContent = 'Şifre değerleri 0–65535 arasında olmalı.';
     return;
   }
 
@@ -1218,7 +1244,7 @@ async function saveAddress() {
   updateControls();
   await acquireBus();
   try {
-    const pwRes = await writeHoldingMultiple(oldId, ADDR.password, password, timeout);
+    const pwRes = await writeHoldingMultiple(oldId, ADDR.password, FAN_PASSWORD, timeout);
     if (!pwRes.ok) throw new Error('Şifre yazılamadı: ' + pwRes.error);
 
     const addrRes = await writeHolding(oldId, ADDR.fanAddress, newId, timeout);
@@ -1372,9 +1398,11 @@ async function writeRegisterTool() {
 
   await acquireBus();
   try {
+    const timeout = Math.max(300, parseInt($('timeout').value, 10) || 150);
+    await authorizeFan(id, timeout);
     const frame = buildWriteFrame(id, addr, value);
     log('tx', `ID ${id} FC6 @0x${addr.toString(16).toUpperCase().padStart(4, '0')} = ${value} · ${hex(frame)}`);
-    const resp = await writeAndWait(frame, id, Math.max(300, parseInt($('timeout').value, 10) || 150));
+    const resp = await writeAndWait(frame, id, timeout);
     if (!resp) {
       $('rwResult').textContent = 'Yanıt yok.';
       log('err', `ID ${id} FC6: yanıt yok`);
