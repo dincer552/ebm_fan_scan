@@ -383,7 +383,7 @@ function setUpdaterUI(mode, detail) {
 
   if (mode === 'restart') {
     strip.classList.add('restart');
-    text.textContent = 'Sunucu dosyaları güncellendi. Tam etki için bu pencereyi kapatıp start.bat ile yeniden açın.';
+    text.textContent = 'Sunucu dosyaları güncellendi. Tam etki için programı kapatıp FanModbus.exe (veya start.bat) ile yeniden açın.';
     button.textContent = 'Kontrol Et';
     button.disabled = false;
     return;

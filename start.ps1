@@ -48,6 +48,28 @@ function Send-Json {
     Send-Response -Stream $Stream -Code $Code -Text $Text -ContentType 'application/json; charset=utf-8' -Body $bytes
 }
 
+function Get-NormalizedHash {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return '' }
+    try {
+        $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+        $text = $text.TrimStart([char]0xFEFF)
+        $text = $text -replace "`r`n", "`n"
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+            $hash = $sha.ComputeHash($bytes)
+            return (([BitConverter]::ToString($hash)) -replace '-', '')
+        }
+        finally {
+            $sha.Dispose()
+        }
+    }
+    catch {
+        return ''
+    }
+}
+
 function Get-LocalBuildInfo {
     $file = Join-Path $installFull 'build_info.json'
     if (Test-Path -LiteralPath $file) {
@@ -181,9 +203,7 @@ function Invoke-UpdateApply {
             }
 
         $startPath = Join-Path $installFull 'start.ps1'
-        $beforeHash = if (Test-Path -LiteralPath $startPath) {
-            (Get-FileHash -LiteralPath $startPath -Algorithm SHA256).Hash
-        } else { '' }
+        $beforeHash = Get-NormalizedHash -Path $startPath
 
         $appDest = Join-Path $installFull 'app'
         New-Item -ItemType Directory -Path $appDest -Force | Out-Null
@@ -199,7 +219,7 @@ function Invoke-UpdateApply {
         Copy-Item -LiteralPath (Join-Path $srcRoot 'start.ps1') -Destination $installFull -Force
         Copy-Item -LiteralPath (Join-Path $srcRoot 'start.bat') -Destination $installFull -Force
 
-        $afterHash = (Get-FileHash -LiteralPath $startPath -Algorithm SHA256).Hash
+        $afterHash = Get-NormalizedHash -Path $startPath
         $restartRequired = [bool]($beforeHash -and $beforeHash -ne $afterHash)
 
         $buildInfo = [ordered]@{
