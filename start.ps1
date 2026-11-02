@@ -11,7 +11,6 @@ try {
 catch { }
 
 $Repo = 'dincer552/ebm_fan_scan'
-$RepoApi = "https://api.github.com/repos/$Repo"
 $ArchiveUrl = "https://github.com/$Repo/archive/refs/heads/main.zip"
 $UpdaterUserAgent = 'EBM-Fan-Scan-Updater'
 
@@ -113,19 +112,28 @@ function Get-LocalBuildInfo {
 function Get-RemoteCommit {
     $headers = @{
         'User-Agent'    = $UpdaterUserAgent
-        'Accept'        = 'application/vnd.github+json'
         'Cache-Control' = 'no-cache'
     }
-    $commit = Invoke-RestMethod -Uri "$RepoApi/commits/main" -Headers $headers -Method Get -TimeoutSec 25
-    $sha = [string]$commit.sha
-    if (-not $sha) { throw 'GitHub yanitinda commit SHA bulunamadi.' }
-    $message = (([string]$commit.commit.message) -split "`n")[0].Trim()
+
+    # The GitHub REST API is limited to 60 requests/hour per IP without a
+    # token; the commit Atom feed has no such quota.
+    $feedUrl = "https://github.com/$Repo/commits/main.atom"
+    $feed = Invoke-WebRequest -Uri $feedUrl -Headers $headers -UseBasicParsing -TimeoutSec 25
+    $xml = [xml]$feed.Content
+    $entry = @($xml.feed.entry)[0]
+    if (-not $entry) { throw 'GitHub commit akisinda kayit bulunamadi.' }
+
+    $match = [regex]::Match([string]$entry.id, 'Grit::Commit/([0-9a-fA-F]{40})')
+    if (-not $match.Success) { throw 'GitHub commit SHA okunamadi.' }
+
+    $sha = $match.Groups[1].Value
+    $message = (([string]$entry.title).Trim() -split "`n")[0].Trim()
     return [pscustomobject]@{
         sha     = $sha
         short   = $sha.Substring(0, [Math]::Min(7, $sha.Length))
-        date    = [string]$commit.commit.author.date
+        date    = [string]$entry.updated
         message = $message
-        url     = [string]$commit.html_url
+        url     = "https://github.com/$Repo/commit/$sha"
     }
 }
 
