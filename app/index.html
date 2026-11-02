@@ -21,6 +21,15 @@
   </div>
 </header>
 
+<div class="updateStrip" id="updateStrip">
+  <div class="updateLeft">
+    <span class="updateDot"></span>
+    <span id="updateText">Sürüm bilgisi alınıyor…</span>
+    <span class="versionChip" id="versionChip">Sürüm: —</span>
+  </div>
+  <button id="btnUpdate" class="secondary updateBtn">Kontrol Et</button>
+</div>
+
 <main>
   <section class="card" id="connCard">
     <div class="cardHead">
@@ -168,7 +177,10 @@
   </section>
 </main>
 
-<footer>Yerel uygulama · Web Serial · XON/XOFF yok</footer>
+<footer>
+  Yerel uygulama · Web Serial · Güncelleme kaynağı:
+  <a href="https://github.com/dincer552/ebm_fan_scan" target="_blank" rel="noopener">github.com/dincer552/ebm_fan_scan</a>
+</footer>
 
 <script src="app.js"></script>
 </body>

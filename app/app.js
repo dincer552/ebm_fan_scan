@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', init);
 function init() {
   loadSettings();
   bindEvents();
+  initUpdater();
 
   if (!('serial' in navigator)) {
     $('btnConnect').disabled = true;
@@ -252,6 +253,183 @@ function exceptionText(code) {
   if (code === 'CRC') return 'CRC hatası';
   if (code === 'FC') return 'Fonksiyon uyuşmazlığı';
   return `Exception ${code}${map[code] ? ' · ' + map[code] : ''}`;
+}
+
+/* ---------------- updater ---------------- */
+
+const UPDATER = {
+  intervalMs: 30 * 60 * 1000,
+  checking: false,
+  applying: false,
+  available: false,
+  local: null,
+  remote: null,
+};
+
+function initUpdater() {
+  $('btnUpdate').addEventListener('click', onUpdateButton);
+
+  if (sessionStorage.getItem('fanmodbus.restartRequired') === '1') {
+    sessionStorage.removeItem('fanmodbus.restartRequired');
+    setUpdaterUI('restart');
+  } else {
+    setTimeout(() => checkUpdate(false), 1800);
+    setInterval(() => checkUpdate(false), UPDATER.intervalMs);
+  }
+
+  loadLocalVersion();
+}
+
+async function loadLocalVersion() {
+  try {
+    const res = await fetch('/api/version', { cache: 'no-store' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Sürüm okunamadı');
+    UPDATER.local = data;
+    $('versionChip').textContent = 'Sürüm: ' + (data.short || 'bilinmiyor');
+  } catch {
+    $('versionChip').textContent = 'Sürüm: —';
+  }
+}
+
+async function checkUpdate(manual) {
+  if (UPDATER.checking || UPDATER.applying) return;
+  UPDATER.checking = true;
+  setUpdaterUI('checking');
+
+  try {
+    const res = await fetch('/api/update/check', { cache: 'no-store' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+
+    UPDATER.local = data.local;
+    UPDATER.remote = data.remote;
+    UPDATER.available = !!data.available;
+
+    if (data.local && data.local.short) {
+      $('versionChip').textContent = 'Sürüm: ' + data.local.short;
+    }
+
+    if (data.available) {
+      setUpdaterUI('available');
+      log('info', `Yeni sürüm mevcut: ${data.remote.short} · ${data.remote.message}`);
+    } else {
+      setUpdaterUI('current');
+      if (manual) log('info', 'Program güncel.');
+    }
+  } catch (err) {
+    setUpdaterUI('error', err.message || String(err));
+    if (manual) log('err', 'Güncelleme kontrolü: ' + (err.message || err));
+  } finally {
+    UPDATER.checking = false;
+  }
+}
+
+function setUpdaterUI(mode, detail) {
+  const strip = $('updateStrip');
+  const text = $('updateText');
+  const button = $('btnUpdate');
+
+  strip.classList.remove('hasUpdate', 'busy', 'error', 'restart');
+  button.classList.remove('primary', 'warn');
+  button.classList.add('secondary');
+
+  if (mode === 'checking') {
+    strip.classList.add('busy');
+    text.textContent = 'Güncellemeler kontrol ediliyor…';
+    button.textContent = 'Kontrol ediliyor…';
+    button.disabled = true;
+    return;
+  }
+
+  if (mode === 'available') {
+    const r = UPDATER.remote || {};
+    strip.classList.add('hasUpdate');
+    text.textContent = `Yeni sürüm mevcut: ${r.short || ''}${r.message ? ' · ' + r.message : ''}`;
+    button.textContent = 'GÜNCELLE';
+    button.disabled = false;
+    button.classList.remove('secondary');
+    button.classList.add('primary');
+    return;
+  }
+
+  if (mode === 'current') {
+    const local = UPDATER.local || {};
+    text.textContent = 'Program güncel' + (local.short ? ' · ' + local.short : '');
+    button.textContent = 'Kontrol Et';
+    button.disabled = false;
+    return;
+  }
+
+  if (mode === 'applying') {
+    strip.classList.add('busy');
+    text.textContent = 'Yeni sürüm indiriliyor ve kuruluyor…';
+    button.textContent = 'İNDİRİLİYOR…';
+    button.disabled = true;
+    return;
+  }
+
+  if (mode === 'done') {
+    strip.classList.add('hasUpdate');
+    text.textContent = 'Güncelleme kuruldu. Sayfa yenileniyor…';
+    button.textContent = 'TAMAM';
+    button.disabled = true;
+    return;
+  }
+
+  if (mode === 'restart') {
+    strip.classList.add('restart');
+    text.textContent = 'Sunucu dosyaları güncellendi. Tam etki için bu pencereyi kapatıp start.bat ile yeniden açın.';
+    button.textContent = 'Kontrol Et';
+    button.disabled = false;
+    return;
+  }
+
+  strip.classList.add('error');
+  text.textContent = 'Güncelleme hatası: ' + (detail || 'bilinmeyen hata');
+  button.textContent = 'Tekrar Dene';
+  button.disabled = false;
+}
+
+async function onUpdateButton() {
+  if (UPDATER.applying) return;
+
+  if (!UPDATER.available) {
+    await checkUpdate(true);
+    return;
+  }
+
+  const remote = UPDATER.remote || {};
+  const ok = confirm(
+    `Yeni sürüm indirilip kurulacak:\n\n${remote.short || ''} · ${remote.message || ''}\n\nDevam edilsin mi?`
+  );
+  if (!ok) return;
+
+  UPDATER.applying = true;
+  setUpdaterUI('applying');
+
+  try {
+    const res = await fetch('/api/update/apply', {
+      method: 'POST',
+      headers: { 'X-FanModbus-Update': 'apply' },
+      cache: 'no-store',
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+
+    UPDATER.available = false;
+    setUpdaterUI('done');
+    log('info', `Güncelleme kuruldu: ${data.short || ''}${data.restartRequired ? ' · sunucu yeniden başlatılmalı' : ''}`);
+
+    if (data.restartRequired) {
+      sessionStorage.setItem('fanmodbus.restartRequired', '1');
+    }
+    setTimeout(() => location.reload(), 1500);
+  } catch (err) {
+    UPDATER.applying = false;
+    setUpdaterUI('error', err.message || String(err));
+    log('err', 'Güncelleme başarısız: ' + (err.message || err));
+  }
 }
 
 /* ---------------- serial I/O ---------------- */
