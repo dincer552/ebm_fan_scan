@@ -183,6 +183,7 @@ main {
   gap: 16px;
 }
 
+#detailCard { grid-column: 1 / -1; }
 #logCard { grid-column: 1 / -1; }
 
 @media (max-width: 1000px) {
@@ -342,6 +343,46 @@ button.warn {
 }
 
 .warnText { color: #f4d68a; border-color: rgba(251, 191, 36, .28); background: rgba(251, 191, 36, .05); }
+
+.fanPanel {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(15, 26, 46, .55);
+}
+
+.fanStats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.fanStat {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card2);
+}
+
+.fanStat span {
+  display: block;
+  font-size: 11px;
+  letter-spacing: .02em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.fanStat b {
+  font-size: 17px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.fanStat.running b { color: var(--green); }
+.fanStat.error b { color: var(--red); }
+
+.fanPanel .grid { margin-bottom: 12px; }
 
 .progress {
   height: 9px;

@@ -15,6 +15,20 @@ const S = {
   devices: [],
   selected: null,
   portLabel: '',
+  fanTimer: null,
+  fanPolling: false,
+  fanBusy: false,
+};
+
+const REG_BASE = 0xD000;
+
+const FAN = {
+  setpoint: 0xD001,
+  motorStatus: 0xD011,
+  actualSpeed: 0xD010,
+  modulation: 0xD019,
+  mode: 0xD106,
+  maxSpeed: 0xD119,
 };
 
 const DEFAULTS = {
@@ -70,6 +84,9 @@ function bindEvents() {
   $('btnReadAll').addEventListener('click', readSelectedDevice);
   $('btnReadReg').addEventListener('click', readRegisterTool);
   $('btnWriteReg').addEventListener('click', writeRegisterTool);
+  $('btnFanStart').addEventListener('click', startFan);
+  $('btnFanStop').addEventListener('click', stopFan);
+  $('btnFanRefresh').addEventListener('click', () => refreshFanStatus(true));
   $('btnClearLog').addEventListener('click', () => { $('log').textContent = ''; });
   $('btnCopyLog').addEventListener('click', async () => {
     try {
@@ -88,6 +105,7 @@ function bindEvents() {
       if (S.port && e.target === S.port) {
         log('err', 'Port bağlantısı koptu.');
         S.closing = true;
+        stopFanPoll();
         if (S.pending) S.pending.finish(null);
         S.scanning = false;
         S.port = null;
@@ -162,6 +180,11 @@ function updateControls() {
   $('btnReadAll').disabled = !connected || scanning || !S.selected;
   $('btnReadReg').disabled = !connected || scanning || !S.selected;
   $('btnWriteReg').disabled = !connected || scanning || !S.selected;
+
+  const fanReady = connected && !scanning && !!S.selected && !S.fanBusy;
+  $('btnFanStart').disabled = !fanReady;
+  $('btnFanStop').disabled = !fanReady;
+  $('btnFanRefresh').disabled = !fanReady;
 
   if (scanning) setBadge('busy');
   else if (connected) setBadge('on');
@@ -642,7 +665,7 @@ async function startScan() {
 
       let hit = null;
       for (const f of funcs) {
-        const resp = await requestRead(id, f, 0, 8, timeout, retries);
+        const resp = await requestRead(id, f, REG_BASE, 8, timeout, retries);
         if (resp) {
           const parsed = parseResponse(resp, f);
           if (!hit || (hit.exception && !parsed.exception)) {
@@ -745,6 +768,8 @@ function selectDevice(dev) {
   $('detailBody').hidden = false;
   $('detailPill').textContent = `Adres ${dev.id} · FC${dev.func}`;
   updateControls();
+  resetFanPanel();
+  refreshFanStatus(false);
 
   const wrap = $('detailRegs');
   wrap.textContent = '';
@@ -754,17 +779,19 @@ function selectDevice(dev) {
     p.textContent = `Cihaz yanıt verdi ancak veri okunamadı: ${exceptionText(dev.exception)}. “Registerları Oku” ile FC4 deneyin.`;
     wrap.appendChild(p);
   } else {
-    wrap.appendChild(regBlock(`FC${dev.func} · 0x0000–`, dev.regs));
+    wrap.appendChild(regBlock(`FC${dev.func} · 0xD000–`, dev.regs, REG_BASE));
   }
 }
 
 function clearDetail() {
+  stopFanPoll();
   S.selected = null;
   $('detailEmpty').hidden = false;
   $('detailBody').hidden = true;
   $('detailPill').textContent = '—';
   $('detailRegs').textContent = '';
   $('rwResult').textContent = '';
+  resetFanPanel();
   updateControls();
 }
 
@@ -813,12 +840,12 @@ async function readSelectedDevice() {
   await acquireBus();
   try {
     for (const func of [3, 4]) {
-      log('tx', `ID ${dev.id} FC${func} @0x0000 x16`);
-      const resp = await requestRead(dev.id, func, 0, 16, timeout, 1, false);
+      log('tx', `ID ${dev.id} FC${func} @0xD000 x16`);
+      const resp = await requestRead(dev.id, func, REG_BASE, 16, timeout, 1, false);
       if (!resp) {
         const block = document.createElement('div');
         block.className = 'regBlock';
-        block.innerHTML = `<h4>FC${func} · 0x0000–0x000F</h4><div class="empty">Yanıt yok</div>`;
+        block.innerHTML = `<h4>FC${func} · 0xD000–0xD00F</h4><div class="empty">Yanıt yok</div>`;
         wrap.appendChild(block);
         log('err', `ID ${dev.id} FC${func}: yanıt yok`);
         continue;
@@ -830,19 +857,197 @@ async function readSelectedDevice() {
         block.className = 'regBlock';
         block.innerHTML = '';
         const h = document.createElement('h4');
-        h.textContent = `FC${func} · 0x0000–0x000F`;
+        h.textContent = `FC${func} · 0xD000–0xD00F`;
         const e = document.createElement('div');
         e.className = 'empty';
         e.textContent = exceptionText(parsed.exception);
         block.append(h, e);
         wrap.appendChild(block);
       } else {
-        wrap.appendChild(regBlock(`FC${func} · 0x0000–0x000F`, parsed.regs));
+        wrap.appendChild(regBlock(`FC${func} · 0xD000–0xD00F`, parsed.regs, REG_BASE));
       }
     }
   } finally {
     releaseBus();
   }
+}
+
+/* ---------------- fan control ---------------- */
+
+async function readSingle(id, func, addr, timeout) {
+  const resp = await requestRead(id, func, addr, 1, timeout, 1, false);
+  if (!resp) return null;
+  const parsed = parseResponse(resp, func);
+  if (parsed.exception) return null;
+  return parsed.regs.length ? parsed.regs[0] : null;
+}
+
+async function writeHolding(id, addr, value, timeout) {
+  const frame = buildWriteFrame(id, addr, value);
+  const label = '0x' + addr.toString(16).toUpperCase().padStart(4, '0');
+  log('tx', `ID ${id} FC6 @${label} = ${value} · ${hex(frame)}`);
+  const resp = await writeAndWait(frame, id, timeout);
+  if (!resp) return { ok: false, error: 'Yanıt yok' };
+  log('rx', `ID ${id} · ${hex(resp)}`);
+  if (!crcValid(resp)) return { ok: false, error: 'CRC hatası: ' + hex(resp) };
+  if (resp[1] & 0x80) return { ok: false, error: exceptionText(resp[2]) };
+  return { ok: true };
+}
+
+function resetFanPanel() {
+  ['fanActual', 'fanMod', 'fanState', 'fanMax', 'fanMode'].forEach((id) => {
+    $(id).textContent = '—';
+  });
+  $('fanState').parentElement.classList.remove('running', 'error');
+  $('fanHint').textContent =
+    'Hedef hızı girin ve ÇALIŞTIR\'a basın. DURDUR, D001 setpoint\'ini 0 yapar.';
+}
+
+async function refreshFanStatus(verbose = false) {
+  if (!S.port || !S.selected || S.scanning || S.closing || S.fanBusy) return;
+  const id = S.selected.id;
+  const timeout = Math.max(300, parseInt($('timeout').value, 10) || 150);
+
+  await acquireBus();
+  try {
+    const max = await readSingle(id, 3, FAN.maxSpeed, timeout);
+    const setpoint = await readSingle(id, 3, FAN.setpoint, timeout);
+    const actual = await readSingle(id, 4, FAN.actualSpeed, timeout);
+    const modulation = await readSingle(id, 4, FAN.modulation, timeout);
+    const status = await readSingle(id, 4, FAN.motorStatus, timeout);
+    const mode = await readSingle(id, 3, FAN.mode, timeout);
+
+    const maxRpm = max || 3000;
+    const rpm = actual === null ? null : Math.round(actual * maxRpm / 64000);
+    const modPercent = modulation === null ? null : modulation / 655.36;
+
+    $('fanMax').textContent = max === null ? '—' : `${max} rpm`;
+    $('fanMode').textContent = mode === null ? '—' : String(mode);
+    $('fanActual').textContent = rpm === null ? '—' : `${rpm} rpm`;
+    $('fanMod').textContent = modPercent === null ? '—' : `${modPercent.toFixed(1)} %`;
+
+    const stateEl = $('fanState');
+    const stateBox = stateEl.parentElement;
+    stateBox.classList.remove('running', 'error');
+    let stateText = '—';
+
+    if (status !== null && status !== 0) {
+      stateText = 'Hata 0x' + status.toString(16).toUpperCase().padStart(4, '0');
+      stateBox.classList.add('error');
+    } else if (setpoint === 0) {
+      stateText = 'Durdu';
+    } else if (rpm !== null && rpm > 0) {
+      stateText = 'Çalışıyor';
+      stateBox.classList.add('running');
+    } else if (setpoint !== null && setpoint > 0) {
+      stateText = 'Başlıyor';
+    }
+    stateEl.textContent = stateText;
+
+    if (verbose) {
+      const spText = setpoint === null ? '—' : `0x${setpoint.toString(16).toUpperCase().padStart(4, '0')}`;
+      log('info', `Fan durumu · setpoint ${spText} · ${rpm === null ? '—' : rpm + ' rpm'} · ` +
+        `${modPercent === null ? '—' : modPercent.toFixed(1) + ' %'} · ${stateText} · mod ${mode === null ? '—' : mode}`);
+    }
+  } finally {
+    releaseBus();
+  }
+}
+
+function startFanPoll() {
+  stopFanPoll();
+  S.fanTimer = setInterval(async () => {
+    if (S.fanPolling || !S.port || !S.selected || S.scanning || S.closing) return;
+    S.fanPolling = true;
+    try {
+      await refreshFanStatus(false);
+    } finally {
+      S.fanPolling = false;
+    }
+  }, 2000);
+}
+
+function stopFanPoll() {
+  if (S.fanTimer) clearInterval(S.fanTimer);
+  S.fanTimer = null;
+  S.fanPolling = false;
+}
+
+async function startFan() {
+  if (!S.port || !S.selected || S.scanning || S.fanBusy) return;
+  const id = S.selected.id;
+  const rpm = Math.round(parseFloat($('fanRpm').value));
+
+  if (!Number.isFinite(rpm) || rpm <= 0) {
+    $('fanHint').textContent = 'Geçerli bir hedef hız girin (rpm > 0).';
+    return;
+  }
+
+  if (!confirm(`ID ${id} fanı ${rpm} rpm hedefiyle çalıştırılsın mı?\n\nD001 setpoint'ine yazılacak.`)) {
+    return;
+  }
+
+  const timeout = Math.max(300, parseInt($('timeout').value, 10) || 150);
+  S.fanBusy = true;
+  updateControls();
+  await acquireBus();
+  try {
+    let max = await readSingle(id, 3, FAN.maxSpeed, timeout);
+    if (!max) max = 3000;
+
+    const target = clamp(rpm, 1, max);
+    const setpoint = Math.round(target * 64000 / max) & 0xFFF0;
+    const res = await writeHolding(id, FAN.setpoint, setpoint, timeout);
+
+    if (!res.ok) {
+      $('fanHint').textContent = 'Çalıştırma başarısız: ' + res.error;
+      log('err', 'Fan çalıştırma: ' + res.error);
+      return;
+    }
+
+    $('fanRpm').value = String(target);
+    $('fanHint').textContent =
+      `Çalıştırıldı · hedef ${target} rpm · D001 = ${setpoint} ` +
+      `(0x${setpoint.toString(16).toUpperCase().padStart(4, '0')}).`;
+    log('info', `Fan çalıştırıldı · hedef ${target} rpm · D001=${setpoint}`);
+    startFanPoll();
+  } finally {
+    S.fanBusy = false;
+    releaseBus();
+    updateControls();
+  }
+
+  await delay(1200);
+  await refreshFanStatus(true);
+}
+
+async function stopFan() {
+  if (!S.port || !S.selected || S.scanning || S.fanBusy) return;
+  const id = S.selected.id;
+  const timeout = Math.max(300, parseInt($('timeout').value, 10) || 150);
+
+  S.fanBusy = true;
+  updateControls();
+  await acquireBus();
+  try {
+    const res = await writeHolding(id, FAN.setpoint, 0, timeout);
+    if (!res.ok) {
+      $('fanHint').textContent = 'Durdurma başarısız: ' + res.error;
+      log('err', 'Fan durdurma: ' + res.error);
+      return;
+    }
+
+    stopFanPoll();
+    $('fanHint').textContent = 'Durduruldu · D001 = 0. Fan ramp-down süresince yavaşlar.';
+    log('info', 'Fan durduruldu · D001=0');
+  } finally {
+    S.fanBusy = false;
+    releaseBus();
+    updateControls();
+  }
+
+  await delay(2000);
+  await refreshFanStatus(true);
 }
 
 /* ---------------- register tool ---------------- */
@@ -939,6 +1144,7 @@ async function disconnect() {
   if (!S.port) return;
   S.closing = true;
   S.abort = true;
+  stopFanPoll();
   if (S.pending) S.pending.finish(null);
 
   try { if (S.reader) await S.reader.cancel(); } catch { /* ignore */ }

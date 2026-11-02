@@ -135,9 +135,37 @@
 
     <div id="detailBody" hidden>
       <div class="row">
-        <button id="btnReadAll" class="secondary">Registerları Oku (0x0000–0x000F)</button>
+        <button id="btnReadAll" class="secondary">Registerları Oku (0xD000–0xD00F)</button>
       </div>
       <div id="detailRegs" class="regWrap"></div>
+
+      <h3>Fan Kontrol</h3>
+      <div class="fanPanel">
+        <div class="fanStats">
+          <div class="fanStat"><span>Gerçek hız</span><b id="fanActual">—</b></div>
+          <div class="fanStat"><span>Modülasyon</span><b id="fanMod">—</b></div>
+          <div class="fanStat"><span>Durum</span><b id="fanState">—</b></div>
+          <div class="fanStat"><span>Maks. hız (D119)</span><b id="fanMax">—</b></div>
+          <div class="fanStat"><span>Kontrol modu (D106)</span><b id="fanMode">—</b></div>
+        </div>
+
+        <div class="grid">
+          <label>Hedef hız (rpm)
+            <input id="fanRpm" type="number" min="0" step="10" value="300">
+          </label>
+        </div>
+
+        <div class="row">
+          <button id="btnFanStart" class="primary" disabled>ÇALIŞTIR</button>
+          <button id="btnFanStop" class="warn" disabled>DURDUR</button>
+          <button id="btnFanRefresh" class="secondary" disabled>Durumu Yenile</button>
+        </div>
+
+        <p class="hint" id="fanHint">
+          ÇALIŞTIR, hedef hızı D001 setpoint'ine yazar. DURDUR, D001'e 0 yazar.
+          Fan, minimum modülasyonun altındaki hızlarda bu eşikte çalışır.
+        </p>
+      </div>
 
       <h3>Tek Register Oku / Yaz</h3>
       <div class="grid">
@@ -148,7 +176,7 @@
           </select>
         </label>
         <label>Adres (hex/dec)
-          <input id="rwAddr" value="0x0000">
+          <input id="rwAddr" value="0xD000">
         </label>
         <label>Adet
           <input id="rwCount" type="number" min="1" max="125" value="1">

@@ -67,7 +67,7 @@ for ($id = $StartId; $id -le $EndId; $id++) {
 
     $resp = Receive-Frame -Sp $sp -TimeoutMs $Timeout
     if ($resp.Length -ge 5 -and $resp[0] -eq $id) {
-        $rxCrc = $resp[$resp.Length - 2] -bor ($resp[$resp.Length - 1] -shl 8)
+        $rxCrc = [int]$resp[$resp.Length - 2] -bor ([int]$resp[$resp.Length - 1] -shl 8)
         $calcCrc = Get-Crc16At -Bytes $resp -Offset 0 -Count ($resp.Length - 2)
         if ($rxCrc -eq $calcCrc) {
             $hex = ($resp | ForEach-Object { $_.ToString('X2') }) -join ' '
