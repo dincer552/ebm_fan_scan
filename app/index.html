@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fan Modbus · Cihaz Bulucu</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="mark">FM</div>
+    <div>
+      <h1>Fan Modbus</h1>
+      <p>Basit cihaz bulma ve register arayüzü</p>
+    </div>
+  </div>
+  <div class="status" id="connBadge">
+    <span class="dot"></span>
+    <span id="connText">Bağlı değil</span>
+  </div>
+</header>
+
+<main>
+  <section class="card" id="connCard">
+    <div class="cardHead">
+      <h2><span class="step">1</span> Bağlantı</h2>
+      <span class="pill" id="portName">COM portu seçilmedi</span>
+    </div>
+
+    <div class="row">
+      <button id="btnConnect" class="primary">Port Seç ve Bağlan</button>
+      <button id="btnDisconnect" class="secondary" disabled>Bağlantıyı Kes</button>
+    </div>
+
+    <div class="grid">
+      <label>Baud
+        <select id="baud">
+          <option>9600</option>
+          <option>19200</option>
+          <option>38400</option>
+          <option>57600</option>
+          <option>115200</option>
+        </select>
+      </label>
+      <label>Parity
+        <select id="parity">
+          <option value="even">Even · 8E1</option>
+          <option value="none">None · 8N1</option>
+          <option value="odd">Odd · 8O1</option>
+        </select>
+      </label>
+      <label>Stop bit
+        <select id="stopBits">
+          <option value="1">1</option>
+          <option value="2">2</option>
+        </select>
+      </label>
+      <label>Yanıt süresi (ms)
+        <input id="timeout" type="number" min="40" max="2000" step="10" value="120">
+      </label>
+      <label>Tekrar deneme
+        <input id="retries" type="number" min="0" max="5" value="0">
+      </label>
+    </div>
+
+    <p class="hint">
+      EC-Control açıkken COM portu meşgul olur; taramadan önce kapatın.
+      ebm-papst fabrika ayarı genellikle <b>19200 8E1</b> ve adres <b>1</b>'dir.
+    </p>
+  </section>
+
+  <section class="card">
+    <div class="cardHead">
+      <h2><span class="step">2</span> Cihaz Tara</h2>
+      <span class="pill" id="scanStatePill">Hazır</span>
+    </div>
+
+    <div class="grid">
+      <label>Başlangıç adresi
+        <input id="scanStart" type="number" min="1" max="247" value="1">
+      </label>
+      <label>Bitiş adresi
+        <input id="scanEnd" type="number" min="1" max="247" value="247">
+      </label>
+      <label class="check"><input id="scanF3" type="checkbox" checked> Fonksiyon 3</label>
+      <label class="check"><input id="scanF4" type="checkbox"> Fonksiyon 4</label>
+    </div>
+
+    <div class="row">
+      <button id="btnScan" class="primary" disabled>Tarama Başlat</button>
+      <button id="btnQuick" class="secondary" disabled>Hızlı Tara (1–16)</button>
+      <button id="btnStop" class="secondary" disabled>Durdur</button>
+    </div>
+
+    <div class="progress"><div class="bar" id="scanBar"></div></div>
+    <div class="scanmeta">
+      <span id="scanInfo">Bağlantı bekleniyor</span>
+      <span id="scanFound"></span>
+    </div>
+
+    <p class="hint">
+      Yanıt yoksa: fan beslemesi açık mı, RS485 <b>A/B</b> doğru mu, <b>GND</b> bağlı mı?
+      Adres veya baud farklıysa ayarları değiştirip yeniden tarayın.
+    </p>
+
+    <div class="tableWrap">
+      <table id="devTable">
+        <thead>
+          <tr><th>#</th><th>Adres</th><th>Yanıt</th><th>Ham veri</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="devEmpty" class="empty">Henüz cihaz bulunmadı.</div>
+    </div>
+  </section>
+
+  <section class="card" id="detailCard">
+    <div class="cardHead">
+      <h2><span class="step">3</span> Seçili Cihaz</h2>
+      <span class="pill" id="detailPill">—</span>
+    </div>
+
+    <div id="detailEmpty" class="empty">Taramada bulunan bir cihazı listeden seçin.</div>
+
+    <div id="detailBody" hidden>
+      <div class="row">
+        <button id="btnReadAll" class="secondary">Registerları Oku (0x0000–0x000F)</button>
+      </div>
+      <div id="detailRegs" class="regWrap"></div>
+
+      <h3>Tek Register Oku / Yaz</h3>
+      <div class="grid">
+        <label>Fonksiyon
+          <select id="rwFunc">
+            <option value="3">3 · Holding oku</option>
+            <option value="4">4 · Input oku</option>
+          </select>
+        </label>
+        <label>Adres (hex/dec)
+          <input id="rwAddr" value="0x0000">
+        </label>
+        <label>Adet
+          <input id="rwCount" type="number" min="1" max="125" value="1">
+        </label>
+        <label>Yazılacak değer
+          <input id="rwValue" value="0">
+        </label>
+      </div>
+      <div class="row">
+        <button id="btnReadReg" class="secondary">Oku</button>
+        <button id="btnWriteReg" class="warn">Tek Register Yaz (FC6)</button>
+      </div>
+      <div id="rwResult" class="monoBox"></div>
+      <p class="hint warnText">Yazma işlemi fanın EEPROM'una işleyebilir. Değerden emin değilseniz yazmayın.</p>
+    </div>
+  </section>
+
+  <section class="card" id="logCard">
+    <div class="cardHead">
+      <h2><span class="step">4</span> Haberleşme Günlüğü</h2>
+      <div class="row tight">
+        <button id="btnClearLog" class="ghost">Temizle</button>
+        <button id="btnCopyLog" class="ghost">Kopyala</button>
+      </div>
+    </div>
+    <div id="log" class="log mono"></div>
+  </section>
+</main>
+
+<footer>Yerel uygulama · Web Serial · XON/XOFF yok</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
