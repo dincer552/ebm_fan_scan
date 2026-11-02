@@ -344,7 +344,8 @@ button.warn {
 
 .warnText { color: #f4d68a; border-color: rgba(251, 191, 36, .28); background: rgba(251, 191, 36, .05); }
 
-.fanPanel {
+.fanPanel,
+.addrPanel {
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -383,6 +384,16 @@ button.warn {
 .fanStat.error b { color: var(--red); }
 
 .fanPanel .grid { margin-bottom: 12px; }
+
+.addrPanel .grid { margin-bottom: 12px; }
+
+.pwGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 700px) {
+  .pwGrid { grid-template-columns: 1fr; }
+}
 
 .progress {
   height: 9px;

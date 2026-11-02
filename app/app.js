@@ -7,6 +7,7 @@ const S = {
   reader: null,
   writer: null,
   readLoopRunning: false,
+  readLoopPromise: null,
   closing: false,
   pending: null,
   busy: false,
@@ -18,6 +19,7 @@ const S = {
   fanTimer: null,
   fanPolling: false,
   fanBusy: false,
+  addrBusy: false,
 };
 
 const REG_BASE = 0xD000;
@@ -29,6 +31,32 @@ const FAN = {
   modulation: 0xD019,
   mode: 0xD106,
   maxSpeed: 0xD119,
+};
+
+const ADDR = {
+  fanAddress: 0xD100,
+  transmissionSpeed: 0xD149,
+  parityConfig: 0xD14A,
+  reset: 0xD000,
+  password: 0xD002,
+};
+
+const BAUD_CODES = {
+  1200: 0,
+  2400: 1,
+  4800: 2,
+  9600: 3,
+  19200: 4,
+  38400: 5,
+  57600: 6,
+  115200: 7,
+};
+
+const PROTOCOLS = {
+  0: { parity: 'even', stopBits: 1, label: '8E1' },
+  1: { parity: 'odd', stopBits: 1, label: '8O1' },
+  2: { parity: 'none', stopBits: 2, label: '8N2' },
+  3: { parity: 'none', stopBits: 1, label: '8N1' },
 };
 
 const DEFAULTS = {
@@ -87,6 +115,8 @@ function bindEvents() {
   $('btnFanStart').addEventListener('click', startFan);
   $('btnFanStop').addEventListener('click', stopFan);
   $('btnFanRefresh').addEventListener('click', () => refreshFanStatus(true));
+  $('btnAddrSave').addEventListener('click', saveAddress);
+  $('btnAddrDefaults').addEventListener('click', fillAddressDefaults);
   $('btnClearLog').addEventListener('click', () => { $('log').textContent = ''; });
   $('btnCopyLog').addEventListener('click', async () => {
     try {
@@ -181,10 +211,14 @@ function updateControls() {
   $('btnReadReg').disabled = !connected || scanning || !S.selected;
   $('btnWriteReg').disabled = !connected || scanning || !S.selected;
 
-  const fanReady = connected && !scanning && !!S.selected && !S.fanBusy;
+  const fanReady = connected && !scanning && !!S.selected && !S.fanBusy && !S.addrBusy;
   $('btnFanStart').disabled = !fanReady;
   $('btnFanStop').disabled = !fanReady;
   $('btnFanRefresh').disabled = !fanReady;
+
+  const addrReady = connected && !scanning && !!S.selected && !S.fanBusy && !S.addrBusy;
+  $('btnAddrSave').disabled = !addrReady;
+  $('btnAddrDefaults').disabled = !addrReady;
 
   if (scanning) setBadge('busy');
   else if (connected) setBadge('on');
@@ -237,6 +271,13 @@ function buildReadFrame(id, func, addr, count) {
 
 function buildWriteFrame(id, addr, value) {
   const body = [id & 0xFF, 0x06, (addr >> 8) & 0xFF, addr & 0xFF, (value >> 8) & 0xFF, value & 0xFF];
+  const c = crc16(body);
+  return Uint8Array.from([...body, c & 0xFF, (c >> 8) & 0xFF]);
+}
+
+function buildWriteMultipleFrame(id, addr, values) {
+  const body = [id & 0xFF, 0x10, (addr >> 8) & 0xFF, addr & 0xFF, 0, values.length, values.length * 2];
+  for (const v of values) body.push((v >> 8) & 0xFF, v & 0xFF);
   const c = crc16(body);
   return Uint8Array.from([...body, c & 0xFF, (c >> 8) & 0xFF]);
 }
@@ -503,7 +544,7 @@ function startReadLoop(port) {
   if (S.readLoopRunning) return;
   S.readLoopRunning = true;
 
-  (async () => {
+  S.readLoopPromise = (async () => {
     while (port.readable && !S.closing) {
       const reader = port.readable.getReader();
       S.reader = reader;
@@ -555,7 +596,10 @@ function onRx(chunk) {
   if (p.raw.length < 3) return;
 
   const funcByte = p.raw[1];
-  const need = (funcByte & 0x80) ? 5 : (3 + p.raw[2] + 2);
+  let need;
+  if (funcByte & 0x80) need = 5;
+  else if (funcByte === 0x06 || funcByte === 0x10) need = 8;
+  else need = 3 + p.raw[2] + 2;
   if (p.raw.length < need) return;
 
   p.finish(Uint8Array.from(p.raw.slice(0, need)));
@@ -769,6 +813,7 @@ function selectDevice(dev) {
   $('detailPill').textContent = `Adres ${dev.id} · FC${dev.func}`;
   updateControls();
   resetFanPanel();
+  fillAddressDefaults();
   refreshFanStatus(false);
 
   const wrap = $('detailRegs');
@@ -1048,6 +1093,214 @@ async function stopFan() {
 
   await delay(2000);
   await refreshFanStatus(true);
+}
+
+/* ---------------- addressing ---------------- */
+
+function fillAddressDefaults() {
+  if (!S.selected) return;
+  $('addrNew').value = String(S.selected.id);
+  $('addrBaud').value = String(parseInt($('baud').value, 10) || 19200);
+
+  const parity = $('parity').value;
+  const stop = parseInt($('stopBits').value, 10) === 2 ? 2 : 1;
+  let proto = 0;
+  if (parity === 'odd') proto = 1;
+  else if (parity === 'none' && stop === 2) proto = 2;
+  else if (parity === 'none') proto = 3;
+  $('addrProto').value = String(proto);
+}
+
+async function writeHoldingMultiple(id, addr, values, timeout) {
+  const frame = buildWriteMultipleFrame(id, addr, values);
+  const label = '0x' + addr.toString(16).toUpperCase().padStart(4, '0');
+  log('tx', `ID ${id} FC16 @${label} x${values.length} · ${hex(frame)}`);
+  const resp = await writeAndWait(frame, id, timeout);
+  if (!resp) return { ok: false, error: 'Yanıt yok' };
+  log('rx', `ID ${id} · ${hex(resp)}`);
+  if (!crcValid(resp)) return { ok: false, error: 'CRC hatası: ' + hex(resp) };
+  if (resp[1] & 0x80) return { ok: false, error: exceptionText(resp[2]) };
+  return { ok: true };
+}
+
+async function writeHoldingEither(primaryId, fallbackId, addr, value, timeout) {
+  const first = await writeHolding(primaryId, addr, value, timeout);
+  if (first.ok || primaryId === fallbackId) return first;
+  return writeHolding(fallbackId, addr, value, timeout);
+}
+
+async function reopenPort(baud, parity, stopBits) {
+  S.closing = true;
+  if (S.pending) S.pending.finish(null);
+  stopFanPoll();
+
+  try { if (S.reader) await S.reader.cancel(); } catch { /* ignore */ }
+  await delay(80);
+  try { if (S.writer) { S.writer.releaseLock(); S.writer = null; } } catch { /* ignore */ }
+  try { await S.port.close(); } catch (err) { log('err', 'Port kapatma: ' + (err.message || err)); }
+
+  if (S.readLoopPromise) {
+    await Promise.race([S.readLoopPromise, delay(1500)]);
+  }
+  S.readLoopRunning = false;
+  S.readLoopPromise = null;
+  S.reader = null;
+
+  await S.port.open({ baudRate: baud, dataBits: 8, stopBits, parity, flowControl: 'none', bufferSize: 8192 });
+  S.closing = false;
+  startReadLoop(S.port);
+
+  $('baud').value = String(baud);
+  $('parity').value = parity;
+  $('stopBits').value = String(stopBits);
+  saveSettings();
+  log('info', `Port yeniden açıldı · ${baud} 8${parity[0].toUpperCase()}${stopBits}`);
+}
+
+async function verifyAddress(id, timeout) {
+  const resp = await requestRead(id, 3, ADDR.fanAddress, 1, timeout, 1, false);
+  if (!resp) return null;
+  const parsed = parseResponse(resp, 3);
+  return parsed.exception ? null : (parsed.regs.length ? parsed.regs[0] : 0);
+}
+
+async function saveAddress() {
+  if (!S.port || !S.selected || S.scanning || S.fanBusy || S.addrBusy) return;
+
+  const oldId = S.selected.id;
+  const newId = parseInt($('addrNew').value, 10);
+  const baud = parseInt($('addrBaud').value, 10);
+  const protoCode = parseInt($('addrProto').value, 10);
+  const proto = PROTOCOLS[protoCode];
+  const password = [1, 2, 3].map((i) => parseInt($('addrPw' + i).value, 10));
+
+  if (!Number.isInteger(newId) || newId < 1 || newId > 247) {
+    $('addrHint').textContent = 'Yeni adres 1–247 arasında olmalı.';
+    return;
+  }
+  if (!(baud in BAUD_CODES)) {
+    $('addrHint').textContent = 'Geçerli bir baud hızı seçin.';
+    return;
+  }
+  if (!proto) {
+    $('addrHint').textContent = 'Geçerli bir protokol seçin.';
+    return;
+  }
+  if (password.some((v) => !Number.isInteger(v) || v < 0 || v > 65535)) {
+    $('addrHint').textContent = 'Şifre değerleri 0–65535 arasında olmalı.';
+    return;
+  }
+
+  const oldBaud = parseInt($('baud').value, 10) || 19200;
+  const oldParity = $('parity').value;
+  const oldStop = parseInt($('stopBits').value, 10) === 2 ? 2 : 1;
+
+  const message =
+    `Fan yeniden adreslenecek:\n\n` +
+    `Adres: ${oldId} → ${newId}\n` +
+    `Arayüz: ${oldBaud} → ${baud} · ${proto.label}\n\n` +
+    'Kayıttan sonra bağlantı yeni ayarlarla yeniden açılacak. Devam edilsin mi?';
+  if (!confirm(message)) return;
+
+  const timeout = Math.max(500, parseInt($('timeout').value, 10) || 150);
+  let failure = null;
+  let resetAttempted = false;
+  let addressWritten = false;
+
+  S.addrBusy = true;
+  updateControls();
+  await acquireBus();
+  try {
+    const pwRes = await writeHoldingMultiple(oldId, ADDR.password, password, timeout);
+    if (!pwRes.ok) throw new Error('Şifre yazılamadı: ' + pwRes.error);
+
+    const addrRes = await writeHolding(oldId, ADDR.fanAddress, newId, timeout);
+    if (!addrRes.ok) throw new Error('Adres yazılamadı: ' + addrRes.error);
+    addressWritten = true;
+
+    const baudRes = await writeHoldingEither(newId, oldId, ADDR.transmissionSpeed, BAUD_CODES[baud], timeout);
+    if (!baudRes.ok) throw new Error('Baud hızı yazılamadı: ' + baudRes.error);
+
+    const parityRes = await writeHoldingEither(newId, oldId, ADDR.parityConfig, protoCode, timeout);
+    if (!parityRes.ok) throw new Error('Protokol yazılamadı: ' + parityRes.error);
+
+    resetAttempted = true;
+    const resetRes = await writeHoldingEither(newId, oldId, ADDR.reset, 2, timeout);
+    if (!resetRes.ok) {
+      log('err', 'Transfer parameter yanıtı alınamadı; yeni ayarlarla doğrulanacak: ' + resetRes.error);
+    }
+  } catch (err) {
+    failure = err.message || String(err);
+    if (addressWritten && !resetAttempted) {
+      log('err', 'Adres geri alınıyor…');
+      await writeHoldingEither(newId, oldId, ADDR.fanAddress, oldId, timeout);
+    }
+  } finally {
+    releaseBus();
+    S.addrBusy = false;
+    updateControls();
+  }
+
+  if (failure) {
+    const hint = failure.includes('Cihaz hatası') ? ' Şifre reddedilmiş olabilir.' : '';
+    $('addrHint').textContent = 'Adresleme başarısız: ' + failure + hint;
+    log('err', 'Adresleme başarısız: ' + failure);
+    return;
+  }
+
+  S.addrBusy = true;
+  updateControls();
+  let result = 'lost';
+  try {
+    await reopenPort(baud, proto.parity, proto.stopBits);
+    await delay(1200);
+
+    if (await verifyAddress(newId, timeout) !== null) {
+      result = 'ok';
+    } else if (await verifyAddress(oldId, timeout) !== null) {
+      result = 'old-id';
+    } else {
+      await reopenPort(oldBaud, oldParity, oldStop);
+      await delay(1200);
+      if (await verifyAddress(oldId, timeout) !== null) result = 'fallback';
+    }
+  } catch (err) {
+    log('err', 'Yeniden bağlanma hatası: ' + (err.message || err));
+    try {
+      await reopenPort(oldBaud, oldParity, oldStop);
+      await delay(1000);
+      if (await verifyAddress(oldId, timeout) !== null) result = 'fallback';
+    } catch { /* ignore */ }
+  } finally {
+    S.addrBusy = false;
+    updateControls();
+  }
+
+  if (result === 'ok') {
+    S.selected.id = newId;
+    renderDevices();
+    $('detailPill').textContent = `Adres ${newId} · FC${S.selected.func}`;
+    $('addrHint').textContent =
+      `Kaydedildi · adres ${oldId} → ${newId} · ${baud} ${proto.label}. ` +
+      'Bağlantı yeni ayarlarla çalışıyor.';
+    log('info', `Adresleme tamamlandı · ${oldId} → ${newId} · ${baud} ${proto.label}`);
+    await refreshFanStatus(true);
+  } else if (result === 'old-id') {
+    $('addrHint').textContent =
+      `Arayüz ${baud} ${proto.label} uygulandı ancak adres değişmedi. ` +
+      'Bağlantı eski adresle sürüyor; adreslemeyi yeniden deneyin.';
+    log('err', `Adres değişmedi; ID ${oldId} yanıt veriyor`);
+  } else if (result === 'fallback') {
+    $('addrHint').textContent =
+      'Yeni ayarlar doğrulanamadı; eski ayarlarla bağlantı geri getirildi. ' +
+      'Fanı kapatıp açarak tekrar deneyin.';
+    log('err', 'Yeni ayarlar doğrulanamadı; eski ayarlara dönüldü');
+  } else {
+    $('addrHint').textContent =
+      'Bağlantı kurulamadı. Fanı kapatıp açın; 19200 8E1 ile yeniden tarayın.';
+    log('err', 'Adresleme sonrası bağlantı kurulamadı');
+    await disconnect();
+  }
 }
 
 /* ---------------- register tool ---------------- */

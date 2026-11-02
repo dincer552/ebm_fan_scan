@@ -167,6 +167,58 @@
         </p>
       </div>
 
+      <h3>Adres Değiştir</h3>
+      <div class="addrPanel">
+        <div class="grid">
+          <label>Yeni adres (1–247)
+            <input id="addrNew" type="number" min="1" max="247" value="1">
+          </label>
+          <label>Baud hızı
+            <select id="addrBaud">
+              <option value="1200">1200</option>
+              <option value="2400">2400</option>
+              <option value="4800">4800</option>
+              <option value="9600">9600</option>
+              <option value="19200" selected>19200</option>
+              <option value="38400">38400</option>
+              <option value="57600">57600</option>
+              <option value="115200">115200</option>
+            </select>
+          </label>
+          <label>Protokol
+            <select id="addrProto">
+              <option value="0" selected>8E1 · Even</option>
+              <option value="1">8O1 · Odd</option>
+              <option value="2">8N2 · None</option>
+              <option value="3">8N1 · None</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="grid pwGrid">
+          <label>Şifre 1 · D002 (53250)
+            <input id="addrPw1" type="number" min="0" max="65535" value="25968">
+          </label>
+          <label>Şifre 2 · D003
+            <input id="addrPw2" type="number" min="0" max="65535" value="19744">
+          </label>
+          <label>Şifre 3 · D004
+            <input id="addrPw3" type="number" min="0" max="65535" value="17731">
+          </label>
+        </div>
+
+        <div class="row">
+          <button id="btnAddrSave" class="warn" disabled>ADRESLE ve KAYDET</button>
+          <button id="btnAddrDefaults" class="ghost" disabled>Mevcut Ayarları Getir</button>
+        </div>
+
+        <p class="hint" id="addrHint">
+          Şifre D002–D004'e (53250–53252) 3 register olarak yazılır. Ardından D100 adres,
+          D149 baud ve D14A protokol yazılır; D000=2 ile uygulanır.
+          Kayıttan sonra bağlantı yeni adres ve hızla yeniden açılır.
+        </p>
+      </div>
+
       <h3>Tek Register Oku / Yaz</h3>
       <div class="grid">
         <label>Fonksiyon
