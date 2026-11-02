@@ -1,0 +1,71 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ebm-fan-scan-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build FanModbus.exe
+        shell: powershell
+        env:
+          FANMODBUS_VERSION: v0.1.0.${{ github.run_number }}
+          FANMODBUS_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          .\build_exe.ps1
+          if (-not (Test-Path -LiteralPath '.\FanModbus.exe')) {
+            throw 'FanModbus.exe was not created.'
+          }
+
+      - name: Smoke test launcher
+        shell: powershell
+        run: |
+          $runtime = Join-Path $PWD 'runtime_url.txt'
+          Remove-Item -LiteralPath $runtime -Force -ErrorAction SilentlyContinue
+          $exe = Join-Path $PWD 'FanModbus.exe'
+          $process = Start-Process -FilePath $exe -ArgumentList '--no-browser' -PassThru
+          $url = $null
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Milliseconds 500
+            if (Test-Path -LiteralPath $runtime) {
+              $url = (Get-Content -LiteralPath $runtime -Raw).Trim()
+              break
+            }
+            if ($process.HasExited) {
+              throw "Launcher exited early with code $($process.ExitCode)."
+            }
+          }
+          if (-not $url) { throw 'Server URL was not written within 30 seconds.' }
+          $version = Invoke-RestMethod -Uri ($url + 'api/version') -TimeoutSec 10
+          if (-not $version.ok) { throw 'api/version failed.' }
+          Write-Host "Smoke OK: $url version=$($version.version) sha=$($version.short)"
+          taskkill /PID $process.Id /T /F | Out-Null
+          Start-Sleep -Milliseconds 500
+
+      - name: Publish latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.0.${{ github.run_number }}
+          name: EBM Fan Scan v0.1.0.${{ github.run_number }}
+          body: |
+            Fan Modbus tek dosya Windows EXE.
+
+            - Commit: ${{ github.sha }}
+            - Indirme: `FanModbus.exe`
+            - Ilk calistirmada program dosyalarini %LOCALAPPDATA%\EBMFanScan altina acar.
+          files: FanModbus.exe
+          make_latest: true
+          token: ${{ secrets.GITHUB_TOKEN }}

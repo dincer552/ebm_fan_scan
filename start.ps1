@@ -257,6 +257,9 @@ if (-not $listener) {
 }
 
 $url = 'http://localhost:{0}/' -f $Port
+$runtimeFile = Join-Path $installFull 'runtime_url.txt'
+try { Set-Content -LiteralPath $runtimeFile -Value $url -Encoding ASCII -Force } catch { }
+
 Write-Host ''
 Write-Host '  Fan Modbus - yerel arayuz' -ForegroundColor Cyan
 Write-Host "  $url" -ForegroundColor Green
