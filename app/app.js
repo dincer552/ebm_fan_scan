@@ -579,10 +579,16 @@ function onRx(chunk) {
     let k = 0;
     while (k < tx.length && k < p.raw.length && p.raw[k] === tx[k]) k++;
     if (k === tx.length) {
-      p.raw.splice(0, k);
-      p.echo = null;
+      // FC6 yanıtı isteğin aynısıdır; yankı sanıp silmemek gerekir.
+      if (p.txFunc === 0x06) {
+        p.echo = null;
+      } else {
+        p.raw.splice(0, k);
+        p.echo = null;
+        if (!p.raw.length) return;
+      }
     } else if (k === p.raw.length) {
-      return; // şimdilik yalnızca istek yankısı geldi
+      return; // henüz yalnızca istek yankısının bir kısmı geldi
     } else {
       p.echo = null;
     }
@@ -610,6 +616,7 @@ function awaitResponse(expectId, txFrame, timeoutMs) {
     const p = {
       raw: [],
       echo: Array.from(txFrame),
+      txFunc: txFrame[1],
       expectId,
       resolved: false,
       timer: null,
@@ -1218,14 +1225,14 @@ async function saveAddress() {
     if (!addrRes.ok) throw new Error('Adres yazılamadı: ' + addrRes.error);
     addressWritten = true;
 
-    const baudRes = await writeHoldingEither(newId, oldId, ADDR.transmissionSpeed, BAUD_CODES[baud], timeout);
+    const baudRes = await writeHoldingEither(oldId, newId, ADDR.transmissionSpeed, BAUD_CODES[baud], timeout);
     if (!baudRes.ok) throw new Error('Baud hızı yazılamadı: ' + baudRes.error);
 
-    const parityRes = await writeHoldingEither(newId, oldId, ADDR.parityConfig, protoCode, timeout);
+    const parityRes = await writeHoldingEither(oldId, newId, ADDR.parityConfig, protoCode, timeout);
     if (!parityRes.ok) throw new Error('Protokol yazılamadı: ' + parityRes.error);
 
     resetAttempted = true;
-    const resetRes = await writeHoldingEither(newId, oldId, ADDR.reset, 2, timeout);
+    const resetRes = await writeHoldingEither(oldId, newId, ADDR.reset, 2, timeout);
     if (!resetRes.ok) {
       log('err', 'Transfer parameter yanıtı alınamadı; yeni ayarlarla doğrulanacak: ' + resetRes.error);
     }
@@ -1233,7 +1240,7 @@ async function saveAddress() {
     failure = err.message || String(err);
     if (addressWritten && !resetAttempted) {
       log('err', 'Adres geri alınıyor…');
-      await writeHoldingEither(newId, oldId, ADDR.fanAddress, oldId, timeout);
+      await writeHoldingEither(oldId, newId, ADDR.fanAddress, oldId, timeout);
     }
   } finally {
     releaseBus();
