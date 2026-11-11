@@ -1388,12 +1388,17 @@ async function factoryReset() {
   let factoryBaud = 19200;
   let factoryProtoCode = 0;
   let activeId = currentId;
+  let copyDone = false;
   let failure = null;
 
   S.factoryBusy = true;
   updateControls();
   await acquireBus();
   try {
+    // Factory-area registers can be authorization-gated; unlock before reading them.
+    const pw = await writeHoldingMultiple(currentId, ADDR.password, FAN_PASSWORD, timeout);
+    if (!pw.ok) throw new Error('Şifre yazılamadı: ' + pw.error);
+
     const fId = await readSingle(currentId, 3, ADDR.factoryAddress, timeout);
     if (fId !== null && fId >= 1 && fId <= 247) factoryId = fId;
 
@@ -1404,16 +1409,13 @@ async function factoryReset() {
     if (fProto !== null && PROTOCOLS[fProto]) factoryProtoCode = fProto;
 
     const protoLabel = (PROTOCOLS[factoryProtoCode] || PROTOCOLS[0]).label;
+    log('info', `Fabrika hedefi okundu · ID ${factoryId} · ${factoryBaud} ${protoLabel}`);
     $('factoryHint').textContent =
       `Fabrika hedefi: ID ${factoryId} · ${factoryBaud} ${protoLabel}. Sıfırlanıyor…`;
-
-    const pw = await writeHoldingMultiple(currentId, ADDR.password, FAN_PASSWORD, timeout);
-    if (!pw.ok) throw new Error('Şifre yazılamadı: ' + pw.error);
 
     const res = await writeHoldingEither(currentId, currentId, ADDR.factorySetting, 1, timeout);
     if (!res.ok) throw new Error('D005 yazılamadı: ' + res.error);
 
-    let done = false;
     for (let i = 0; i < 20; i++) {
       await delay(500);
       let value = await readSingle(currentId, 3, ADDR.factorySetting, timeout);
@@ -1426,13 +1428,17 @@ async function factoryReset() {
 
       activeId = id;
       if (value & 0x04) throw new Error('Fabrika kopyalama hatası (D005 Error biti).');
-      if ((value & 0x03) === 0) { done = true; break; }
+      if ((value & 0x03) === 0) { copyDone = true; break; }
     }
-    if (!done) throw new Error('Fabrika kopyalama tamamlanmadı (D005 sıfırlanmadı).');
 
-    const apply = await writeHoldingEither(activeId, activeId, ADDR.reset, 2, timeout);
-    if (!apply.ok) {
-      log('err', 'Transfer parameter yanıtı alınamadı; yeni ayarlarla doğrulanacak: ' + apply.error);
+    if (copyDone) {
+      const apply = await writeHoldingEither(activeId, activeId, ADDR.reset, 2, timeout);
+      if (!apply.ok) {
+        log('err', 'Transfer parameter yanıtı alınamadı; yeni ayarlarla doğrulanacak: ' + apply.error);
+      }
+    } else {
+      // Interface may already have switched; apply and verify at the factory settings instead.
+      log('warn', 'D005 eski ayarlarla okunamadı; fabrika arayüzünde uygulanıp doğrulanacak.');
     }
   } catch (err) {
     failure = err.message || String(err);
@@ -1449,6 +1455,9 @@ async function factoryReset() {
   }
 
   const proto = PROTOCOLS[factoryProtoCode] || PROTOCOLS[0];
+  const oldBaud = parseInt($('baud').value, 10) || 19200;
+  const oldParity = $('parity').value;
+  const oldStop = parseInt($('stopBits').value, 10) === 2 ? 2 : 1;
   let verifiedId = null;
 
   S.factoryBusy = true;
@@ -1456,10 +1465,25 @@ async function factoryReset() {
   try {
     await reopenPort(factoryBaud, proto.parity, proto.stopBits);
     await delay(1500);
+    if (!copyDone) {
+      const apply = await writeHoldingEither(factoryId, currentId, ADDR.reset, 2, timeout);
+      if (!apply.ok) log('err', 'Fabrika arayüzünde transfer parameter: ' + apply.error);
+      await delay(800);
+    }
     if (await verifyAddress(factoryId, timeout) !== null) verifiedId = factoryId;
     else if (await verifyAddress(currentId, timeout) !== null) verifiedId = currentId;
+    else {
+      await reopenPort(oldBaud, oldParity, oldStop);
+      await delay(1200);
+      if (await verifyAddress(currentId, timeout) !== null) verifiedId = currentId;
+    }
   } catch (err) {
     log('err', 'Fabrika sıfırlama sonrası bağlantı: ' + (err.message || err));
+    try {
+      await reopenPort(oldBaud, oldParity, oldStop);
+      await delay(1000);
+      if (await verifyAddress(currentId, timeout) !== null) verifiedId = currentId;
+    } catch { /* ignore */ }
   } finally {
     S.factoryBusy = false;
     updateControls();
@@ -1469,9 +1493,15 @@ async function factoryReset() {
     S.selected.id = verifiedId;
     renderDevices();
     $('detailPill').textContent = `Adres ${verifiedId} · FC${S.selected.func}`;
+    const nowBaud = parseInt($('baud').value, 10) || factoryBaud;
+    const nowStop = parseInt($('stopBits').value, 10) === 2 ? 2 : 1;
+    const nowCode = Object.keys(PROTOCOLS).find(
+      (c) => PROTOCOLS[c].parity === $('parity').value && PROTOCOLS[c].stopBits === nowStop
+    );
+    const nowLabel = (PROTOCOLS[nowCode] || proto).label;
     $('factoryHint').textContent =
-      `Fabrika ayarları yüklendi · ID ${verifiedId} · ${factoryBaud} ${proto.label}. Fan durduruldu.`;
-    log('info', `Fabrika sıfırlama tamamlandı · ID ${verifiedId} · ${factoryBaud} ${proto.label}`);
+      `Fabrika ayarları yüklendi · ID ${verifiedId} · ${nowBaud} ${nowLabel}.`;
+    log('info', `Fabrika sıfırlama tamamlandı · ID ${verifiedId} · ${nowBaud} ${nowLabel}`);
     await refreshFanStatus(true);
   } else {
     $('factoryHint').textContent =
