@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -14,6 +15,19 @@ namespace EbmFanScan
     internal static class Program
     {
         private const string MutexName = "Local\\EBMFanScanLauncher";
+        internal const string AppWindowTitle = "Fan Modbus · Cihaz Bulucu";
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr FindWindowW(string className, string windowName);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int command);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsIconic(IntPtr hWnd);
 
         [STAThread]
         private static void Main(string[] args)
@@ -21,24 +35,11 @@ namespace EbmFanScan
             bool createdNew;
             using (var mutex = new Mutex(true, MutexName, out createdNew))
             {
-                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                string installDir = ResolveInstallDir(baseDir);
+                string installDir = ResolveInstallDir(AppDomain.CurrentDomain.BaseDirectory);
 
                 if (!createdNew)
                 {
-                    string existingUrl = ReadRuntimeUrl(installDir);
-                    if (!string.IsNullOrEmpty(existingUrl))
-                    {
-                        OpenBrowser(existingUrl);
-                    }
-                    else
-                    {
-                        MessageBox.Show(
-                            "Fan Modbus zaten çalışıyor.",
-                            "Fan Modbus",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information);
-                    }
+                    ActivateExisting(installDir);
                     return;
                 }
 
@@ -49,7 +50,7 @@ namespace EbmFanScan
                 {
                     EnsureRuntimeFiles(installDir);
                     bool noBrowser = args.Any(a => string.Equals(a, "--no-browser", StringComparison.OrdinalIgnoreCase));
-                    Application.Run(new MainForm(installDir, noBrowser));
+                    Application.Run(new FanAppContext(installDir, noBrowser));
                 }
                 catch (Exception ex)
                 {
@@ -159,189 +160,188 @@ namespace EbmFanScan
             }
         }
 
-        public static void OpenBrowser(string url)
+        internal static IntPtr FindAppWindow()
         {
+            try { return FindWindowW(null, AppWindowTitle); }
+            catch { return IntPtr.Zero; }
+        }
+
+        private static void ActivateExisting(string installDir)
+        {
+            IntPtr hwnd = FindAppWindow();
+            if (hwnd != IntPtr.Zero)
+            {
+                if (IsIconic(hwnd)) ShowWindow(hwnd, 9);
+                SetForegroundWindow(hwnd);
+                return;
+            }
+
+            string url = ReadRuntimeUrl(installDir);
+            if (string.IsNullOrEmpty(url)) return;
+            if (StartAppWindow(url, installDir) == null) OpenUrl(url);
+        }
+
+        internal static string FindBrowserPath()
+        {
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+            string[] candidates =
+            {
+                Path.Combine(programFilesX86, @"Microsoft\Edge\Application\msedge.exe"),
+                Path.Combine(programFiles, @"Microsoft\Edge\Application\msedge.exe"),
+                Path.Combine(localAppData, @"Microsoft\Edge\Application\msedge.exe"),
+                Path.Combine(programFiles, @"Google\Chrome\Application\chrome.exe"),
+                Path.Combine(programFilesX86, @"Google\Chrome\Application\chrome.exe"),
+                Path.Combine(localAppData, @"Google\Chrome\Application\chrome.exe")
+            };
+
+            return candidates.FirstOrDefault(File.Exists);
+        }
+
+        internal static Process StartAppWindow(string url, string installDir)
+        {
+            string browser = FindBrowserPath();
+            if (browser == null) return null;
+
+            string profile = Path.Combine(installDir, "browser-profile");
+            try { Directory.CreateDirectory(profile); }
+            catch { return null; }
+
+            // A dedicated profile gives this window its own browser process, so
+            // closing the window can be detected and ends the whole program.
+            string arguments =
+                "--app=" + url +
+                " --user-data-dir=\"" + profile + "\"" +
+                " --no-first-run --no-default-browser-check --disable-sync" +
+                " --disable-background-timer-throttling --disable-renderer-backgrounding" +
+                " --disable-backgrounding-occluded-windows --start-maximized";
+
+            var info = new ProcessStartInfo(browser, arguments)
+            {
+                UseShellExecute = false,
+                WorkingDirectory = installDir
+            };
+            return Process.Start(info);
+        }
+
+        internal static void OpenUrl(string url)
+        {
+            try { Process.Start(url); }
+            catch { }
+        }
+
+        internal static void KillTree(Process process)
+        {
+            if (process == null) return;
             try
             {
-                string edge = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-                    @"Microsoft\Edge\Application\msedge.exe");
-                if (File.Exists(edge))
-                {
-                    Process.Start(new ProcessStartInfo(edge, "--app=" + url + " --window-size=1500,1000")
-                    {
-                        UseShellExecute = false
-                    });
-                    return;
-                }
+                if (process.HasExited) return;
 
-                string chrome = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                    @"Google\Chrome\Application\chrome.exe");
-                if (File.Exists(chrome))
+                string taskkill = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.System),
+                    "taskkill.exe");
+                var info = new ProcessStartInfo(taskkill, "/PID " + process.Id + " /T /F")
                 {
-                    Process.Start(new ProcessStartInfo(chrome, "--app=" + url + " --window-size=1500,1000")
-                    {
-                        UseShellExecute = false
-                    });
-                    return;
-                }
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
 
-                Process.Start(url);
+                using (Process killer = Process.Start(info))
+                {
+                    if (killer != null) killer.WaitForExit(4000);
+                }
+                process.WaitForExit(4000);
             }
-            catch
-            {
-                try { Process.Start(url); } catch { }
-            }
+            catch { }
         }
     }
 
-    internal sealed class MainForm : Form
+    internal sealed class FanAppContext : ApplicationContext
     {
         private readonly string _installDir;
         private readonly bool _noBrowser;
         private readonly string _runtimeFile;
         private readonly StringBuilder _output = new StringBuilder();
 
-        private Process _server;
         private System.Windows.Forms.Timer _timer;
+        private Process _server;
+        private Process _browser;
+        private NotifyIcon _tray;
         private DateTime _startedAt;
         private string _url;
+        private bool _started;
+        private bool _windowSeen;
+        private int _windowMissing;
 
-        private Label _status;
-        private LinkLabel _link;
-        private Button _openButton;
-
-        public MainForm(string installDir, bool noBrowser)
+        public FanAppContext(string installDir, bool noBrowser)
         {
             _installDir = installDir;
             _noBrowser = noBrowser;
             _runtimeFile = Path.Combine(installDir, "runtime_url.txt");
 
-            Text = "Fan Modbus";
-            ClientSize = new Size(500, 268);
-            FormBorderStyle = FormBorderStyle.FixedSingle;
-            MaximizeBox = false;
-            StartPosition = FormStartPosition.CenterScreen;
-            Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
-            BackColor = Color.FromArgb(11, 18, 32);
-            ForeColor = Color.FromArgb(230, 238, 252);
-
-            var title = new Label();
-            title.Text = "Fan Modbus";
-            title.Font = new Font("Segoe UI", 18F, FontStyle.Bold, GraphicsUnit.Point);
-            title.ForeColor = Color.FromArgb(103, 232, 249);
-            title.AutoSize = true;
-            title.Location = new Point(22, 18);
-            Controls.Add(title);
-
-            var subtitle = new Label();
-            subtitle.Text = "Modbus gateway cihaz bulucu";
-            subtitle.ForeColor = Color.FromArgb(147, 164, 195);
-            subtitle.AutoSize = true;
-            subtitle.Location = new Point(25, 54);
-            Controls.Add(subtitle);
-
-            _status = new Label();
-            _status.Text = "Sunucu başlatılıyor…";
-            _status.AutoSize = false;
-            _status.AutoEllipsis = true;
-            _status.Size = new Size(455, 42);
-            _status.Location = new Point(25, 88);
-            _status.ForeColor = Color.FromArgb(230, 238, 252);
-            Controls.Add(_status);
-
-            _link = new LinkLabel();
-            _link.Text = "";
-            _link.AutoSize = false;
-            _link.Size = new Size(455, 22);
-            _link.Location = new Point(25, 130);
-            _link.LinkColor = Color.FromArgb(103, 232, 249);
-            _link.LinkClicked += delegate
-            {
-                if (!string.IsNullOrEmpty(_url)) Program.OpenBrowser(_url);
-            };
-            Controls.Add(_link);
-
-            _openButton = new Button();
-            _openButton.Text = "Arayüzü Aç";
-            _openButton.Enabled = false;
-            _openButton.Size = new Size(120, 34);
-            _openButton.Location = new Point(25, 172);
-            _openButton.Click += delegate
-            {
-                if (!string.IsNullOrEmpty(_url)) Program.OpenBrowser(_url);
-            };
-            Controls.Add(_openButton);
-
-            var folderButton = new Button();
-            folderButton.Text = "Klasörü Aç";
-            folderButton.Size = new Size(110, 34);
-            folderButton.Location = new Point(155, 172);
-            folderButton.Click += delegate
-            {
-                try { Process.Start("explorer.exe", "\"" + _installDir + "\""); } catch { }
-            };
-            Controls.Add(folderButton);
-
-            var stopButton = new Button();
-            stopButton.Text = "Durdur ve Kapat";
-            stopButton.Size = new Size(150, 34);
-            stopButton.Location = new Point(325, 172);
-            stopButton.Click += delegate
-            {
-                StopServer();
-                Close();
-            };
-            Controls.Add(stopButton);
-
-            var note = new Label();
-            note.Text = "Bu pencere açıkken program çalışır. Tarayıcı penceresi kapansa bile sunucu açık kalır.";
-            note.ForeColor = Color.FromArgb(120, 140, 170);
-            note.AutoSize = false;
-            note.Size = new Size(455, 36);
-            note.Location = new Point(25, 218);
-            Controls.Add(note);
+            _timer = new System.Windows.Forms.Timer();
+            _timer.Interval = 250;
+            _timer.Tick += delegate { Poll(); };
+            _timer.Start();
         }
 
-        protected override void OnShown(EventArgs e)
+        private void Poll()
         {
-            base.OnShown(e);
-            StartServer();
-        }
-
-        protected override void OnFormClosing(FormClosingEventArgs e)
-        {
-            if (e.CloseReason == CloseReason.WindowsShutDown || e.CloseReason == CloseReason.TaskManagerClosing)
+            if (!_started)
             {
-                StopServer();
-                base.OnFormClosing(e);
+                _started = true;
+                StartServer();
                 return;
             }
 
-            if (_server != null && !_server.HasExited)
+            if (_server == null || _server.HasExited)
             {
-                DialogResult result = MessageBox.Show(
-                    "Fan Modbus kapatılsın mı?\r\n\r\nEvet: sunucu durdurulur.\r\nHayır: pencere simge durumuna küçültülür.\r\nİptal: hiçbir şey yapılmaz.",
-                    "Fan Modbus",
-                    MessageBoxButtons.YesNoCancel,
-                    MessageBoxIcon.Question);
-
-                if (result == DialogResult.Cancel)
-                {
-                    e.Cancel = true;
-                    return;
-                }
-                if (result == DialogResult.No)
-                {
-                    e.Cancel = true;
-                    WindowState = FormWindowState.Minimized;
-                    return;
-                }
+                if (_url == null) Fail("Sunucu başlatılamadı.\r\n\r\n" + Tail(900));
+                else ExitThread();
+                return;
             }
 
-            StopServer();
-            base.OnFormClosing(e);
+            if (_url == null)
+            {
+                string url = Program.ReadRuntimeUrl(_installDir);
+                if (url == null)
+                {
+                    if ((DateTime.UtcNow - _startedAt).TotalSeconds > 30)
+                    {
+                        Fail("Sunucu 30 saniye içinde başlamadı.\r\n\r\n" + Tail(900));
+                    }
+                    return;
+                }
+
+                _url = url;
+                if (!_noBrowser) LaunchInterface();
+                return;
+            }
+
+            if (_browser == null) return;
+
+            if (_browser.HasExited)
+            {
+                if (_windowSeen) ExitThread();
+                else UseDefaultBrowser();
+                return;
+            }
+
+            IntPtr hwnd = Program.FindAppWindow();
+            if (hwnd != IntPtr.Zero)
+            {
+                _windowSeen = true;
+                _windowMissing = 0;
+                return;
+            }
+
+            if (_windowSeen)
+            {
+                _windowMissing++;
+                if (_windowMissing >= 10) ExitThread();
+            }
         }
 
         private void StartServer()
@@ -355,7 +355,7 @@ namespace EbmFanScan
             string script = Path.Combine(_installDir, "start.ps1");
             if (!File.Exists(script))
             {
-                SetStatus("start.ps1 bulunamadı: " + _installDir);
+                Fail("start.ps1 bulunamadı: " + _installDir);
                 return;
             }
 
@@ -387,62 +387,52 @@ namespace EbmFanScan
             }
             catch (Exception ex)
             {
-                SetStatus("Sunucu başlatılamadı: " + ex.Message);
+                Fail("Sunucu başlatılamadı: " + ex.Message);
                 return;
             }
 
             _startedAt = DateTime.UtcNow;
-            _timer = new System.Windows.Forms.Timer();
-            _timer.Interval = 250;
-            _timer.Tick += delegate { PollServer(); };
-            _timer.Start();
         }
 
-        private void PollServer()
+        private void LaunchInterface()
         {
-            if (_server != null && _server.HasExited)
-            {
-                if (_timer != null) _timer.Stop();
-                SetStatus("Sunucu başlatılamadı.");
-                MessageBox.Show(
-                    "Sunucu başlatılamadı.\r\n\r\n" + Tail(900),
-                    "Fan Modbus",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
-                return;
-            }
-
-            string url = Program.ReadRuntimeUrl(_installDir);
-            if (!string.IsNullOrEmpty(url))
-            {
-                _url = url;
-                if (_timer != null) _timer.Stop();
-                _link.Text = url;
-                _openButton.Enabled = true;
-                SetStatus("Çalışıyor. Arayüz tarayıcıda açıldı.");
-                if (!_noBrowser)
-                {
-                    Program.OpenBrowser(url);
-                    WindowState = FormWindowState.Minimized;
-                }
-                return;
-            }
-
-            if ((DateTime.UtcNow - _startedAt).TotalSeconds > 30)
-            {
-                if (_timer != null) _timer.Stop();
-                SetStatus("Sunucu 30 saniye içinde başlamadı.");
-                MessageBox.Show(
-                    "Sunucu 30 saniye içinde başlamadı.\r\n\r\n" + Tail(900),
-                    "Fan Modbus",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
-            }
+            try { _browser = Program.StartAppWindow(_url, _installDir); }
+            catch { _browser = null; }
+            if (_browser == null) UseDefaultBrowser();
         }
 
-        private void SetStatus(string text)
+        private void UseDefaultBrowser()
         {
-            if (_status != null) _status.Text = text;
+            _browser = null;
+            Program.OpenUrl(_url);
+            ShowTray();
+        }
+
+        private void ShowTray()
+        {
+            if (_tray != null) return;
+
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Arayüzü Aç", null, delegate { Program.OpenUrl(_url); });
+            menu.Items.Add("Klasörü Aç", null, delegate
+            {
+                try { Process.Start("explorer.exe", "\"" + _installDir + "\""); }
+                catch { }
+            });
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Kapat", null, delegate { ExitThread(); });
+
+            _tray = new NotifyIcon();
+            _tray.Icon = SystemIcons.Application;
+            _tray.Text = "Fan Modbus";
+            _tray.ContextMenuStrip = menu;
+            _tray.Visible = true;
+        }
+
+        private void Fail(string message)
+        {
+            MessageBox.Show(message, "Fan Modbus", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            ExitThread();
         }
 
         private void AppendOutput(string line)
@@ -467,7 +457,7 @@ namespace EbmFanScan
             }
         }
 
-        private void StopServer()
+        protected override void ExitThreadCore()
         {
             if (_timer != null)
             {
@@ -476,31 +466,26 @@ namespace EbmFanScan
                 _timer = null;
             }
 
+            if (_windowSeen) Program.KillTree(_browser);
+            _browser = null;
+
+            Program.KillTree(_server);
+            _server = null;
+
             try
             {
-                if (_server != null && !_server.HasExited)
-                {
-                    string taskkill = Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.System),
-                        "taskkill.exe");
-                    Process.Start(new ProcessStartInfo(taskkill, "/PID " + _server.Id + " /T /F")
-                    {
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    });
-                    _server.WaitForExit(4000);
-                }
+                if (File.Exists(_runtimeFile)) File.Delete(_runtimeFile);
             }
             catch { }
-            finally
+
+            if (_tray != null)
             {
-                _server = null;
-                try
-                {
-                    if (File.Exists(_runtimeFile)) File.Delete(_runtimeFile);
-                }
-                catch { }
+                _tray.Visible = false;
+                _tray.Dispose();
+                _tray = null;
             }
+
+            base.ExitThreadCore();
         }
     }
 }

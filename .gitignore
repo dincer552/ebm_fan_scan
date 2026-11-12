@@ -2,4 +2,5 @@ build_info.json
 backup/
 payload.zip
 runtime_url.txt
+browser-profile/
 FanModbus.exe
